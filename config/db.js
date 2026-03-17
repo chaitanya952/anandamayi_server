@@ -10,7 +10,9 @@ function isConnectionString(value) {
 
 function shouldUseSsl() {
   const value = String(process.env.DB_SSL || process.env.PGSSLMODE || "").toLowerCase();
-  return value === "true" || value === "require" || Boolean(process.env.DATABASE_URL) || isConnectionString(process.env.DB_HOST);
+  const host = String(process.env.DB_HOST || "").toLowerCase();
+  const isRemoteHost = Boolean(host) && host !== "localhost" && host !== "127.0.0.1";
+  return value === "true" || value === "require" || Boolean(process.env.DATABASE_URL) || isConnectionString(process.env.DB_HOST) || isRemoteHost;
 }
 
 function buildPoolConfig() {
