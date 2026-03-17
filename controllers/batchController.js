@@ -9,6 +9,7 @@ function normalizeBatch(input = {}) {
   return {
     batch_name: String(input.batch_name || "").trim(),
     type: String(input.type || "POPULAR").trim().toUpperCase(),
+    trainer: String(input.trainer || "").trim(),
     days: String(input.days || "").trim(),
     start_time: input.start_time || null,
     end_time: input.end_time || null,
@@ -32,7 +33,7 @@ function validateBatch(batch) {
 async function listBatches(req, res) {
   try {
     const rows = await db.all(`
-      SELECT id, batch_name, type, days, start_time, end_time, fee, mode
+      SELECT id, batch_name, type, trainer, days, start_time, end_time, fee, mode
       FROM batches
       ORDER BY id ASC
     `);
@@ -49,10 +50,10 @@ async function createBatch(req, res) {
     if (errors.length) return res.status(400).json({ error: errors.join("; ") });
 
     const created = await db.one(
-      `INSERT INTO batches (batch_name, type, days, start_time, end_time, fee, mode)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, batch_name, type, days, start_time, end_time, fee, mode`,
-      [batch.batch_name, batch.type, batch.days, batch.start_time, batch.end_time, batch.fee, batch.mode]
+      `INSERT INTO batches (batch_name, type, trainer, days, start_time, end_time, fee, mode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, batch_name, type, trainer, days, start_time, end_time, fee, mode`,
+      [batch.batch_name, batch.type, batch.trainer, batch.days, batch.start_time, batch.end_time, batch.fee, batch.mode]
     );
     res.status(201).json(created);
   } catch (e) {
@@ -71,10 +72,10 @@ async function updateBatch(req, res) {
 
     const updated = await db.one(
       `UPDATE batches
-       SET batch_name=$1, type=$2, days=$3, start_time=$4, end_time=$5, fee=$6, mode=$7
-       WHERE id=$8
-       RETURNING id, batch_name, type, days, start_time, end_time, fee, mode`,
-      [batch.batch_name, batch.type, batch.days, batch.start_time, batch.end_time, batch.fee, batch.mode, id]
+       SET batch_name=$1, type=$2, trainer=$3, days=$4, start_time=$5, end_time=$6, fee=$7, mode=$8
+       WHERE id=$9
+       RETURNING id, batch_name, type, trainer, days, start_time, end_time, fee, mode`,
+      [batch.batch_name, batch.type, batch.trainer, batch.days, batch.start_time, batch.end_time, batch.fee, batch.mode, id]
     );
 
     if (!updated) return res.status(404).json({ error: "Batch not found" });

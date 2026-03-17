@@ -5,6 +5,48 @@ const bcrypt = require("bcryptjs");
 const { db } = require("../config/db");
 const { JWT_SECRET } = require("../middleware/auth");
 
+async function createAdmin(req, res) {
+  try {
+    const setupKey = process.env.ADMIN_SETUP_KEY || "";
+    const providedKey = String(req.headers["x-admin-setup-key"] || req.body.setupKey || "");
+    const { username, password } = req.body;
+
+    if (!setupKey) {
+      return res.status(403).json({ error: "ADMIN_SETUP_KEY is not configured" });
+    }
+
+    if (!providedKey || providedKey !== setupKey) {
+      return res.status(401).json({ error: "Invalid setup key" });
+    }
+
+    if (!username || !password) {
+      return res.status(400).json({ error: "Username and password are required" });
+    }
+
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    const normalizedUsername = String(username).trim().toLowerCase();
+    const existingAdmin = await db.one("SELECT id FROM admins WHERE username = $1", [normalizedUsername]);
+
+    if (existingAdmin) {
+      return res.status(409).json({ error: "Admin username already exists" });
+    }
+
+    const admin = await db.one(
+      `INSERT INTO admins (username, password_hash)
+       VALUES ($1, $2)
+       RETURNING id, username`,
+      [normalizedUsername, bcrypt.hashSync(String(password), 12)]
+    );
+
+    res.status(201).json({ ok: true, admin });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 async function adminLogin(req, res) {
   try {
     const { username, password } = req.body;
@@ -65,6 +107,7 @@ async function updateAdminPassword(req, res) {
 }
 
 module.exports = {
+  createAdmin,
   adminLogin,
   updateAdminPassword,
 };
