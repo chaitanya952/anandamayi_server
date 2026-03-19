@@ -3,6 +3,27 @@
 const { db } = require("../config/db");
 const { getBatchNameColumn, paginate } = require("../services/dataAccessService");
 
+function formatAdmissionRecord(row) {
+  if (!row) return row;
+
+  const admissionDate = row.created_at
+    ? new Date(row.created_at).toISOString().slice(0, 10)
+    : "";
+
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email || "",
+    course: row.course || "",
+    batch: row.batch_name || "",
+    admissionDate,
+    paymentStatus: row.payment_status || "Pending",
+    status: row.status || "Active",
+    notes: row.notes || "",
+  };
+}
+
 async function listStudents(req, res) {
   try {
     const {
@@ -16,8 +37,15 @@ async function listStudents(req, res) {
       sortDir = "ASC",
     } = req.query;
 
-    const safeColumns = ["id", "name", "phone", "batch_name", "payment_status", "month", "created_at"];
-    const column = safeColumns.includes(sortBy) ? sortBy : "id";
+    const sortAliases = {
+      batch: "batch_name",
+      paymentStatus: "payment_status",
+      admissionDate: "created_at",
+      course: "course",
+    };
+    const normalizedSortBy = sortAliases[sortBy] || sortBy;
+    const safeColumns = ["id", "name", "phone", "email", "course", "batch_name", "payment_status", "month", "created_at"];
+    const column = safeColumns.includes(normalizedSortBy) ? normalizedSortBy : "id";
     const direction = String(sortDir).toUpperCase() === "DESC" ? "DESC" : "ASC";
     const paging = paginate(page, limit);
     const conditions = [];
@@ -61,7 +89,9 @@ async function listStudents(req, res) {
       [...params, paging.limit, paging.offset]
     );
 
-    res.json({ data, total, page: paging.page, limit: paging.limit });
+    const records = data.map(formatAdmissionRecord);
+
+    res.json({ success: true, records, data, total, page: paging.page, limit: paging.limit });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -73,37 +103,45 @@ async function createStudent(req, res) {
       name,
       phone,
       email = "",
+      course = "",
       batch_name,
+      batch,
       timing_preferred = "",
       timing_scheduled = "",
       payment_status = "Pending",
+      paymentStatus,
       location = "India",
       month = "March",
       notes = "",
     } = req.body;
+
+    const normalizedCourse = course || "";
+    const normalizedBatch = batch_name || batch || "";
+    const normalizedPaymentStatus = paymentStatus || payment_status || "Pending";
 
     if (!name || !phone) {
       return res.status(400).json({ error: "Name and phone required" });
     }
 
     const batchNameColumn = await getBatchNameColumn();
-    const batch = batchNameColumn
-      ? await db.one(`SELECT id FROM batches WHERE ${batchNameColumn} = $1`, [batch_name])
+    const matchedBatch = batchNameColumn
+      ? await db.one(`SELECT id FROM batches WHERE ${batchNameColumn} = $1`, [normalizedBatch])
       : null;
     const student = await db.one(
       `INSERT INTO students
-       (name, phone, email, batch_id, batch_name, timing_preferred, timing_scheduled, payment_status, location, month, notes, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Active')
+       (name, phone, email, course, batch_id, batch_name, timing_preferred, timing_scheduled, payment_status, location, month, notes, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Active')
        RETURNING *`,
       [
         String(name).trim(),
         String(phone).trim(),
         email,
-        batch?.id || null,
-        batch_name,
+        normalizedCourse,
+        matchedBatch?.id || null,
+        normalizedBatch,
         timing_preferred,
         timing_scheduled,
-        payment_status,
+        normalizedPaymentStatus,
         location,
         month,
         notes,
@@ -122,11 +160,11 @@ async function createStudent(req, res) {
         timing_preferred,
         timing_scheduled,
         month,
-        payment_status === "Paid" ? "Confirmed" : "Pending",
+        normalizedPaymentStatus === "Paid" ? "Confirmed" : "Pending",
       ]
     );
 
-    res.status(201).json(student);
+    res.status(201).json({ success: true, record: formatAdmissionRecord(student), student });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -139,40 +177,48 @@ async function updateStudent(req, res) {
       name,
       phone,
       email,
+      course,
       batch_name,
+      batch,
       timing_preferred,
       timing_scheduled,
       payment_status,
+      paymentStatus,
       location,
       month,
       status,
       notes,
     } = req.body;
+    const normalizedCourse = course;
+    const normalizedBatch = batch_name || batch;
+    const normalizedPaymentStatus = paymentStatus || payment_status;
 
     const student = await db.one(
       `UPDATE students
        SET name = COALESCE($1, name),
            phone = COALESCE($2, phone),
            email = COALESCE($3, email),
-           batch_name = COALESCE($4, batch_name),
-           timing_preferred = COALESCE($5, timing_preferred),
-           timing_scheduled = COALESCE($6, timing_scheduled),
-           payment_status = COALESCE($7, payment_status),
-           location = COALESCE($8, location),
-           month = COALESCE($9, month),
-           status = COALESCE($10, status),
-           notes = COALESCE($11, notes),
+           course = COALESCE($4, course),
+           batch_name = COALESCE($5, batch_name),
+           timing_preferred = COALESCE($6, timing_preferred),
+           timing_scheduled = COALESCE($7, timing_scheduled),
+           payment_status = COALESCE($8, payment_status),
+           location = COALESCE($9, location),
+           month = COALESCE($10, month),
+           status = COALESCE($11, status),
+           notes = COALESCE($12, notes),
            updated_at = NOW()
-       WHERE id = $12
+       WHERE id = $13
        RETURNING *`,
       [
         name,
         phone,
         email,
-        batch_name,
+        normalizedCourse,
+        normalizedBatch,
         timing_preferred,
         timing_scheduled,
-        payment_status,
+        normalizedPaymentStatus,
         location,
         month,
         status,
@@ -185,7 +231,7 @@ async function updateStudent(req, res) {
       return res.status(404).json({ error: "Not found" });
     }
 
-    res.json(student);
+    res.json({ success: true, record: formatAdmissionRecord(student), student });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -194,7 +240,7 @@ async function updateStudent(req, res) {
 async function deleteStudent(req, res) {
   try {
     await db.run("DELETE FROM students WHERE id = $1", [Number(req.params.id)]);
-    res.json({ ok: true });
+    res.json({ success: true, ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

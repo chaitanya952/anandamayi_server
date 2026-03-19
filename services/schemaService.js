@@ -11,6 +11,7 @@ async function ensureStudentSchema() {
       name TEXT NOT NULL,
       phone TEXT NOT NULL,
       email TEXT DEFAULT '',
+      course TEXT DEFAULT '',
       batch_id INTEGER,
       batch_name TEXT DEFAULT '',
       timing_preferred TEXT DEFAULT '',
@@ -30,6 +31,7 @@ async function ensureStudentSchema() {
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS name TEXT`);
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS phone TEXT`);
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''`);
+  await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS course TEXT DEFAULT ''`);
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS batch_id INTEGER`);
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS batch_name TEXT DEFAULT ''`);
   await db.run(`ALTER TABLE students ADD COLUMN IF NOT EXISTS timing_preferred TEXT DEFAULT ''`);
@@ -163,7 +165,8 @@ async function ensureQrCodeSchema() {
       upi_id TEXT NOT NULL,
       batch_name TEXT NOT NULL DEFAULT 'All',
       amount NUMERIC(10,2),
-      active BOOLEAN NOT NULL DEFAULT FALSE
+      active BOOLEAN NOT NULL DEFAULT FALSE,
+      audience TEXT NOT NULL DEFAULT 'all'
     )
   `);
 
@@ -172,6 +175,7 @@ async function ensureQrCodeSchema() {
   await db.run(`ALTER TABLE qrcodes ADD COLUMN IF NOT EXISTS batch_name TEXT NOT NULL DEFAULT 'All'`);
   await db.run(`ALTER TABLE qrcodes ADD COLUMN IF NOT EXISTS amount NUMERIC(10,2)`);
   await db.run(`ALTER TABLE qrcodes ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.run(`ALTER TABLE qrcodes ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'all'`);
 }
 
 async function ensureSettingsSchema() {

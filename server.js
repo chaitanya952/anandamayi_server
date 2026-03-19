@@ -38,6 +38,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use("/api/admin", authRoutes);
 app.use("/api/admin", dashboardRoutes);
 app.use("/api/admin", importExportRoutes);
+app.use("/api/admin/admissions", studentRoutes);
 app.use("/api/admin/students", studentRoutes);
 app.use("/api/admin/payments", adminPaymentRoutes);
 app.use("/api/admin/bookings", bookingRoutes);

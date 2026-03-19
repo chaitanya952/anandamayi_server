@@ -4,6 +4,18 @@ const XLSX = require("xlsx");
 const { pool, db } = require("../config/db");
 const { getBatchNameColumn, hasTableColumn } = require("../services/dataAccessService");
 
+function formatImportRecord(row) {
+  return {
+    name: row.name || "",
+    phone: row.phone || "",
+    email: row.email || "",
+    course: row.course || "",
+    batch: row.batch || row.batch_name || "",
+    paymentStatus: row.paymentStatus || row.payment_status || "Pending",
+    status: row.status || "Active",
+  };
+}
+
 async function previewImport(req, res) {
   try {
     if (!req.file) {
@@ -21,7 +33,8 @@ async function previewImport(req, res) {
         const keys = Object.keys(row);
         const nameKey = keys.find((key) => /name/i.test(key));
         const phoneKey = keys.find((key) => /phone|mobile|contact/i.test(key));
-        const batchKey = keys.find((key) => /batch|type|course/i.test(key));
+        const courseKey = keys.find((key) => /^course$/i.test(key)) || keys.find((key) => /course/i.test(key));
+        const batchKey = keys.find((key) => /^batch$/i.test(key)) || keys.find((key) => /batch/i.test(key));
         const paymentKey = keys.find((key) => /pay|status/i.test(key));
         const timingKey = keys.find((key) => /timing|time|slot/i.test(key));
         const monthKey = keys.find((key) => /month/i.test(key));
@@ -46,6 +59,7 @@ async function previewImport(req, res) {
         preview.push({
           name,
           phone,
+          course: courseKey ? String(row[courseKey]).trim() : "",
           batch_name: batchKey ? String(row[batchKey]).trim() : "Online Weekend",
           payment_status: String(row[paymentKey] || "").toLowerCase().includes("paid") ? "Paid" : "Pending",
           timing_preferred: timingKey ? String(row[timingKey]).trim() : "",
@@ -56,7 +70,13 @@ async function previewImport(req, res) {
       }
     }
 
-    res.json({ preview, errors, total: preview.length });
+    res.json({
+      success: true,
+      records: preview.map(formatImportRecord),
+      preview,
+      errors,
+      total: preview.length,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -80,14 +100,26 @@ async function confirmImport(req, res) {
       await client.query("BEGIN");
 
       for (const record of records) {
-        if (!record.name || !record.phone) {
+        const normalizedRecord = {
+          name: record.name,
+          phone: record.phone,
+          email: record.email || "",
+          course: record.course || "",
+          batch_name: record.batch_name || record.batch || "",
+          timing_preferred: record.timing_preferred || "",
+          payment_status: record.payment_status || record.paymentStatus || "Pending",
+          location: record.location || "India",
+          month: record.month || "March",
+        };
+
+        if (!normalizedRecord.name || !normalizedRecord.phone) {
           skipped += 1;
           continue;
         }
 
         const existingStudent = await client.query(
           "SELECT id FROM students WHERE phone = $1 AND batch_name = $2",
-          [record.phone, record.batch_name]
+          [normalizedRecord.phone, normalizedRecord.batch_name]
         );
 
         if (existingStudent.rows.length) {
@@ -100,25 +132,26 @@ async function confirmImport(req, res) {
               `SELECT id
                FROM batches
                WHERE ${batchNameColumn} = $1${hasActiveColumn ? " AND active = TRUE" : ""}`,
-              [record.batch_name]
+              [normalizedRecord.batch_name]
             )
           : { rows: [] };
 
         const studentResult = await client.query(
           `INSERT INTO students
-           (name, phone, email, batch_id, batch_name, timing_preferred, payment_status, location, month, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Active')
-           RETURNING id, name, phone, batch_name`,
+           (name, phone, email, course, batch_id, batch_name, timing_preferred, payment_status, location, month, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Active')
+           RETURNING id, name, phone, course, batch_name`,
           [
-            record.name,
-            record.phone,
-            record.email || "",
+            normalizedRecord.name,
+            normalizedRecord.phone,
+            normalizedRecord.email,
+            normalizedRecord.course,
             batch.rows[0]?.id || null,
-            record.batch_name,
-            record.timing_preferred || "",
-            record.payment_status || "Pending",
-            record.location || "India",
-            record.month || "March",
+            normalizedRecord.batch_name,
+            normalizedRecord.timing_preferred,
+            normalizedRecord.payment_status,
+            normalizedRecord.location,
+            normalizedRecord.month,
           ]
         );
 
@@ -133,9 +166,9 @@ async function confirmImport(req, res) {
             student.name,
             student.phone,
             student.batch_name,
-            record.timing_preferred || "",
-            record.month || "March",
-            record.payment_status === "Paid" ? "Confirmed" : "Pending",
+            normalizedRecord.timing_preferred,
+            normalizedRecord.month,
+            normalizedRecord.payment_status === "Paid" ? "Confirmed" : "Pending",
           ]
         );
 
@@ -150,7 +183,7 @@ async function confirmImport(req, res) {
       client.release();
     }
 
-    res.json({ imported, skipped, total: imported + skipped });
+    res.json({ success: true, imported, skipped, total: imported + skipped });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -163,9 +196,9 @@ async function exportRecords(req, res) {
     let filename;
     let sheetName;
 
-    if (type === "students") {
+    if (type === "students" || type === "admissions") {
       rows = await db.all(`
-        SELECT sno AS "S.No", name AS "Name", phone AS "Phone", email AS "Email", batch_name AS "Batch",
+        SELECT sno AS "S.No", name AS "Name", phone AS "Phone", email AS "Email", course AS "Course", batch_name AS "Batch",
                timing_preferred AS "Timing Preferred", timing_scheduled AS "Timing Scheduled",
                payment_status AS "Payment Status", location AS "Location", month AS "Month",
                status AS "Status", TO_CHAR(created_at, 'DD/MM/YYYY') AS "Joined"

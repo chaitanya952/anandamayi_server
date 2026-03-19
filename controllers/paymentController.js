@@ -2,6 +2,69 @@
 
 const { db } = require("../config/db");
 const { getTableColumns, paginate } = require("../services/dataAccessService");
+const Stripe = require("stripe");
+
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+
+function getFrontendUrl() {
+  return process.env.FRONTEND_URL || process.env.CORS_ORIGIN || "http://localhost:5173";
+}
+
+async function persistConfirmedPayment({ studentId, phone, amount, transactionId, mode = "Stripe", batch_name, notes = "" }) {
+  const studentColumns = await getTableColumns("students");
+  const paymentColumns = await getTableColumns("payments");
+  const bookingColumns = await getTableColumns("bookings");
+  const student = studentId
+    ? await db.one("SELECT * FROM students WHERE id = $1", [studentId])
+    : phone
+      ? await db.one("SELECT * FROM students WHERE phone = $1 LIMIT 1", [phone])
+      : null;
+
+  if (transactionId && paymentColumns.has("transaction_id")) {
+    const existingPayment = await db.one("SELECT * FROM payments WHERE transaction_id = $1 LIMIT 1", [transactionId]);
+    if (existingPayment) {
+      return { ok: true, payment: existingPayment, student };
+    }
+  }
+
+  const insertColumns = [];
+  const insertValues = [];
+  const params = [];
+
+  const pushField = (columnName, value) => {
+    insertColumns.push(columnName);
+    params.push(value);
+    insertValues.push(`$${params.length}`);
+  };
+
+  if (paymentColumns.has("student_id")) pushField("student_id", student?.id || null);
+  if (paymentColumns.has("student_name")) pushField("student_name", student?.name || "Unknown");
+  if (paymentColumns.has("phone")) pushField("phone", phone || student?.phone || "");
+  if (paymentColumns.has("batch_name")) pushField("batch_name", batch_name || student?.batch_name || "");
+  if (paymentColumns.has("amount")) pushField("amount", amount || 0);
+  if (paymentColumns.has("mode")) pushField("mode", mode);
+  if (paymentColumns.has("payment_method")) pushField("payment_method", mode);
+  if (paymentColumns.has("transaction_id")) pushField("transaction_id", transactionId || "");
+  if (paymentColumns.has("status")) pushField("status", "Confirmed");
+  if (paymentColumns.has("notes")) pushField("notes", notes);
+
+  const payment = await db.one(
+    `INSERT INTO payments (${insertColumns.join(",")})
+     VALUES (${insertValues.join(",")})
+     RETURNING *`,
+    params
+  );
+
+  if (student && studentColumns.has("payment_status")) {
+    await db.run("UPDATE students SET payment_status = 'Paid' WHERE id = $1", [student.id]);
+  }
+
+  if (student && bookingColumns.has("status") && bookingColumns.has("student_id")) {
+    await db.run("UPDATE bookings SET status = 'Confirmed' WHERE student_id = $1", [student.id]);
+  }
+
+  return { ok: true, payment, student };
+}
 
 async function listPayments(req, res) {
   try {
@@ -123,51 +186,103 @@ async function updatePayment(req, res) {
 async function confirmPublicPayment(req, res) {
   try {
     const { studentId, phone, amount, transactionId, mode = "UPI", batch_name } = req.body;
-    const studentColumns = await getTableColumns("students");
-    const paymentColumns = await getTableColumns("payments");
-    const bookingColumns = await getTableColumns("bookings");
-    const student = studentId
-      ? await db.one("SELECT * FROM students WHERE id = $1", [studentId])
-      : phone
-        ? await db.one("SELECT * FROM students WHERE phone = $1 LIMIT 1", [phone])
-        : null;
+    const result = await persistConfirmedPayment({
+      studentId,
+      phone,
+      amount,
+      transactionId,
+      mode,
+      batch_name,
+    });
 
-    const insertColumns = [];
-    const insertValues = [];
-    const params = [];
+    res.json({ ok: true, payment: result.payment });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
 
-    const pushField = (columnName, value) => {
-      insertColumns.push(columnName);
-      params.push(value);
-      insertValues.push(`$${params.length}`);
-    };
-
-    if (paymentColumns.has("student_id")) pushField("student_id", student?.id || null);
-    if (paymentColumns.has("student_name")) pushField("student_name", student?.name || "Unknown");
-    if (paymentColumns.has("phone")) pushField("phone", phone || student?.phone || "");
-    if (paymentColumns.has("batch_name")) pushField("batch_name", batch_name || student?.batch_name || "");
-    if (paymentColumns.has("amount")) pushField("amount", amount || 0);
-    if (paymentColumns.has("mode")) pushField("mode", mode);
-    if (paymentColumns.has("payment_method")) pushField("payment_method", mode);
-    if (paymentColumns.has("transaction_id")) pushField("transaction_id", transactionId || "");
-    if (paymentColumns.has("status")) pushField("status", "Confirmed");
-
-    const payment = await db.one(
-      `INSERT INTO payments (${insertColumns.join(",")})
-       VALUES (${insertValues.join(",")})
-       RETURNING *`,
-      params
-    );
-
-    if (student && studentColumns.has("payment_status")) {
-      await db.run("UPDATE students SET payment_status = 'Paid' WHERE id = $1", [student.id]);
+async function createStripeCheckoutSession(req, res) {
+  try {
+    if (!stripe) {
+      return res.status(500).json({ error: "Stripe is not configured on the server." });
     }
 
-    if (student && bookingColumns.has("status") && bookingColumns.has("student_id")) {
-      await db.run("UPDATE bookings SET status = 'Confirmed' WHERE student_id = $1", [student.id]);
+    const { studentId, phone, amount, batch_name, studentName } = req.body;
+    const numericAmount = Number(amount);
+
+    if (!batch_name || !numericAmount || numericAmount <= 0) {
+      return res.status(400).json({ error: "Batch name and amount are required." });
     }
 
-    res.json({ ok: true, payment });
+    const frontendUrl = getFrontendUrl().replace(/\/$/, "");
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      success_url: `${frontendUrl}/?stripe_status=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/?stripe_status=cancelled&tab=Payment`,
+      payment_method_types: ["card"],
+      customer_email: req.body.email || undefined,
+      metadata: {
+        studentId: String(studentId || ""),
+        phone: String(phone || ""),
+        batch_name: String(batch_name || ""),
+        amount: String(numericAmount),
+        studentName: String(studentName || ""),
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: "inr",
+            unit_amount: Math.round(numericAmount * 100),
+            product_data: {
+              name: `${batch_name} Admission`,
+              description: "Anandamayi Nrutyalaya Stripe payment",
+            },
+          },
+        },
+      ],
+    });
+
+    res.json({ ok: true, url: session.url, sessionId: session.id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+async function confirmStripeCheckoutSession(req, res) {
+  try {
+    if (!stripe) {
+      return res.status(500).json({ error: "Stripe is not configured on the server." });
+    }
+
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).json({ error: "sessionId is required." });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (!session || session.payment_status !== "paid") {
+      return res.status(400).json({ error: "Stripe payment has not been completed." });
+    }
+
+    const metadata = session.metadata || {};
+    const result = await persistConfirmedPayment({
+      studentId: metadata.studentId ? Number(metadata.studentId) : null,
+      phone: metadata.phone || "",
+      amount: metadata.amount ? Number(metadata.amount) : (session.amount_total || 0) / 100,
+      transactionId: String(session.payment_intent || session.id),
+      mode: "Stripe",
+      batch_name: metadata.batch_name || "",
+      notes: `Stripe checkout session ${session.id}`,
+    });
+
+    res.json({
+      ok: true,
+      payment: result.payment,
+      student: result.student,
+      batch_name: metadata.batch_name || result.payment?.batch_name || "",
+      amount: metadata.amount ? Number(metadata.amount) : (session.amount_total || 0) / 100,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -178,4 +293,6 @@ module.exports = {
   createPayment,
   updatePayment,
   confirmPublicPayment,
+  createStripeCheckoutSession,
+  confirmStripeCheckoutSession,
 };
