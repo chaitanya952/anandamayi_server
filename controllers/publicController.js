@@ -18,7 +18,15 @@ async function registerStudent(req, res) {
     const studentColumns = await getTableColumns("students");
     const bookingColumns = await getTableColumns("bookings");
     const existingStudent = studentColumns.has("batch_name")
-      ? await db.one("SELECT * FROM students WHERE phone = $1 AND batch_name = $2 ORDER BY id DESC LIMIT 1", [normalizedPhone, normalizedBatchName])
+      ? await db.one(
+          `SELECT *
+           FROM students
+           WHERE phone = $1
+             AND LOWER(TRIM(COALESCE(batch_name, ''))) = LOWER(TRIM($2))
+           ORDER BY id DESC
+           LIMIT 1`,
+          [normalizedPhone, normalizedBatchName]
+        )
       : await db.one("SELECT * FROM students WHERE phone = $1 ORDER BY id DESC LIMIT 1", [normalizedPhone]);
 
     if (existingStudent) {
@@ -95,20 +103,23 @@ async function registerStudent(req, res) {
 async function studentLogin(req, res) {
   try {
     const { phone, batch_name } = req.body;
+    const normalizedPhone = String(phone || "").trim();
+    const normalizedBatchName = String(batch_name || "").trim();
 
-    if (!phone || !batch_name) {
+    if (!normalizedPhone || !normalizedBatchName) {
       return res.status(400).json({ error: "Phone and batch are required" });
     }
 
     const studentColumns = await getTableColumns("students");
-    const student = studentColumns.has("batch_name")
+    let student = studentColumns.has("batch_name")
       ? await db.one(
           `SELECT *
            FROM students
-           WHERE phone = $1 AND batch_name = $2
+           WHERE phone = $1
+             AND LOWER(TRIM(COALESCE(batch_name, ''))) = LOWER(TRIM($2))
            ORDER BY id DESC
            LIMIT 1`,
-          [String(phone).trim(), batch_name]
+          [normalizedPhone, normalizedBatchName]
         )
       : await db.one(
           `SELECT *
@@ -116,8 +127,19 @@ async function studentLogin(req, res) {
            WHERE phone = $1
            ORDER BY id DESC
            LIMIT 1`,
-          [String(phone).trim()]
+          [normalizedPhone]
         );
+
+    if (!student) {
+      student = await db.one(
+        `SELECT *
+         FROM students
+         WHERE phone = $1
+         ORDER BY id DESC
+         LIMIT 1`,
+        [normalizedPhone]
+      );
+    }
 
     if (!student) {
       return res.status(404).json({ error: "Student not found for this batch" });
