@@ -11,6 +11,7 @@ function getFrontendUrl() {
 }
 
 async function persistConfirmedPayment({ studentId, phone, amount, transactionId, mode = "Stripe", batch_name, notes = "" }) {
+  const normalizedTransactionId = String(transactionId || "").trim() || null;
   const studentColumns = await getTableColumns("students");
   const paymentColumns = await getTableColumns("payments");
   const bookingColumns = await getTableColumns("bookings");
@@ -20,8 +21,8 @@ async function persistConfirmedPayment({ studentId, phone, amount, transactionId
       ? await db.one("SELECT * FROM students WHERE phone = $1 LIMIT 1", [phone])
       : null;
 
-  if (transactionId && paymentColumns.has("transaction_id")) {
-    const existingPayment = await db.one("SELECT * FROM payments WHERE transaction_id = $1 LIMIT 1", [transactionId]);
+  if (normalizedTransactionId && paymentColumns.has("transaction_id")) {
+    const existingPayment = await db.one("SELECT * FROM payments WHERE transaction_id = $1 LIMIT 1", [normalizedTransactionId]);
     if (existingPayment) {
       return { ok: true, payment: existingPayment, student };
     }
@@ -44,7 +45,7 @@ async function persistConfirmedPayment({ studentId, phone, amount, transactionId
   if (paymentColumns.has("amount")) pushField("amount", amount || 0);
   if (paymentColumns.has("mode")) pushField("mode", mode);
   if (paymentColumns.has("payment_method")) pushField("payment_method", mode);
-  if (paymentColumns.has("transaction_id")) pushField("transaction_id", transactionId || "");
+  if (paymentColumns.has("transaction_id")) pushField("transaction_id", normalizedTransactionId);
   if (paymentColumns.has("status")) pushField("status", "Confirmed");
   if (paymentColumns.has("notes")) pushField("notes", notes);
 
@@ -130,13 +131,14 @@ async function createPayment(req, res) {
       status = "Confirmed",
       notes = "",
     } = req.body;
+    const normalizedTransactionId = String(transaction_id || "").trim() || null;
 
     const payment = await db.one(
       `INSERT INTO payments
        (student_id, student_name, phone, batch_name, amount, mode, transaction_id, status, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [student_id || null, student_name, phone, batch_name, amount, mode, transaction_id, status, notes]
+      [student_id || null, student_name, phone, batch_name, amount, mode, normalizedTransactionId, status, notes]
     );
 
     if (status === "Confirmed" && student_id) {
@@ -153,6 +155,9 @@ async function updatePayment(req, res) {
   try {
     const paymentId = Number(req.params.id);
     const { student_name, phone, batch_name, amount, mode, transaction_id, status, notes } = req.body;
+    const normalizedTransactionId = typeof transaction_id === "undefined"
+      ? undefined
+      : (String(transaction_id || "").trim() || null);
 
     const payment = await db.one(
       `UPDATE payments
@@ -166,7 +171,7 @@ async function updatePayment(req, res) {
            notes = COALESCE($8, notes)
        WHERE id = $9
        RETURNING *`,
-      [student_name, phone, batch_name, amount, mode, transaction_id, status, notes, paymentId]
+      [student_name, phone, batch_name, amount, mode, normalizedTransactionId, status, notes, paymentId]
     );
 
     if (!payment) {
@@ -190,12 +195,12 @@ async function confirmPublicPayment(req, res) {
       studentId,
       phone,
       amount,
-      transactionId,
+      transactionId: String(transactionId || "").trim(),
       mode,
       batch_name,
     });
 
-    res.json({ ok: true, payment: result.payment });
+    res.json({ ok: true, payment: result.payment, message: "Payment confirmed successfully." });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
