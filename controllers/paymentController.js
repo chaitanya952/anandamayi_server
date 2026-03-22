@@ -191,11 +191,17 @@ async function updatePayment(req, res) {
 async function confirmPublicPayment(req, res) {
   try {
     const { studentId, phone, amount, transactionId, mode = "UPI", batch_name } = req.body;
+    const normalizedTransactionId = String(transactionId || "").trim();
+
+    if (!normalizedTransactionId) {
+      return res.status(400).json({ error: "Transaction ID is required for UPI payment confirmation." });
+    }
+
     const result = await persistConfirmedPayment({
       studentId,
       phone,
       amount,
-      transactionId: String(transactionId || "").trim(),
+      transactionId: normalizedTransactionId,
       mode,
       batch_name,
     });
