@@ -194,7 +194,14 @@ async function ensureSettingsSchema() {
     VALUES
       ('adminEmail', ''),
       ('smtpUser', ''),
-      ('smtpPass', '')
+      ('smtpPass', ''),
+      ('instagramVerifyToken', 'ananadamayi_verify_token'),
+      ('instagramPageAccessToken', ''),
+      ('instagramGraphApiVersion', 'v22.0'),
+      ('instagramPaymentLink', ''),
+      ('instagramRegistrationFormUrl', ''),
+      ('instagramPrivacyPolicyUrl', ''),
+      ('instagramFollowupNote', '30th of this month')
     ON CONFLICT (key) DO NOTHING
   `);
 }

@@ -17,6 +17,7 @@ const importExportRoutes = require("./routes/importExportRoutes");
 const { publicSettingsRoutes, adminSettingsRoutes } = require("./routes/settingsRoutes");
 const publicRoutes = require("./routes/publicRoutes");
 const healthRoutes = require("./routes/healthRoutes");
+const instagramRoutes = require("./routes/instagramRoutes");
 
 const PORT = process.env.PORT || 5000;
 
@@ -48,6 +49,7 @@ app.use("/api/batches", batchRoutes);
 app.use("/api/qr", publicQrCodeRoutes);
 app.use("/api/settings", publicSettingsRoutes);
 app.use("/api/payment", publicPaymentRoutes);
+app.use("/api/instagram", instagramRoutes);
 app.use("/api", publicRoutes);
 app.use("/api", healthRoutes);
 
