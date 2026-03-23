@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const { db } = require("../config/db");
 const { getTableColumns, paginate } = require("../services/dataAccessService");
 const Stripe = require("stripe");
@@ -10,15 +11,74 @@ function getFrontendUrl() {
   return process.env.FRONTEND_URL || process.env.CORS_ORIGIN || "http://localhost:5173";
 }
 
+async function getSettingsMap(keys = []) {
+  if (!keys.length) return {};
+  const rows = await db.all(
+    `SELECT key, value
+     FROM settings
+     WHERE key = ANY($1)`,
+    [keys]
+  ).catch(() => []);
+  return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+}
+
+async function getRazorpayConfig() {
+  const settings = await getSettingsMap([
+    "razorpayKeyId",
+    "razorpayKeySecret",
+    "razorpayWebhookSecret",
+  ]);
+
+  return {
+    keyId: settings.razorpayKeyId || process.env.RAZORPAY_KEY_ID || "",
+    keySecret: settings.razorpayKeySecret || process.env.RAZORPAY_KEY_SECRET || "",
+    webhookSecret: settings.razorpayWebhookSecret || process.env.RAZORPAY_WEBHOOK_SECRET || "",
+  };
+}
+
+function buildBasicAuthHeader(username, password) {
+  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+}
+
+function verifyRazorpaySignature({ orderId, paymentId, signature, secret }) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${orderId}|${paymentId}`)
+    .digest("hex");
+
+  return expected === signature;
+}
+
+function verifyRazorpayWebhookSignature({ rawBody, signature, secret }) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+
+  return expected === signature;
+}
+
 async function persistConfirmedPayment({ studentId, phone, amount, transactionId, mode = "Stripe", batch_name, notes = "" }) {
   const normalizedTransactionId = String(transactionId || "").trim() || null;
+  const normalizedPhone = String(phone || "").trim();
+  const normalizedBatchName = String(batch_name || "").trim();
   const studentColumns = await getTableColumns("students");
   const paymentColumns = await getTableColumns("payments");
   const bookingColumns = await getTableColumns("bookings");
   const student = studentId
     ? await db.one("SELECT * FROM students WHERE id = $1", [studentId])
-    : phone
-      ? await db.one("SELECT * FROM students WHERE phone = $1 LIMIT 1", [phone])
+    : normalizedPhone && normalizedBatchName
+      ? await db.one(
+          `SELECT *
+           FROM students
+           WHERE phone = $1
+             AND LOWER(TRIM(COALESCE(batch_name, ''))) = LOWER(TRIM($2))
+           ORDER BY id DESC
+           LIMIT 1`,
+          [normalizedPhone, normalizedBatchName]
+        )
+      : normalizedPhone
+        ? await db.one("SELECT * FROM students WHERE phone = $1 ORDER BY id DESC LIMIT 1", [normalizedPhone])
       : null;
 
   if (normalizedTransactionId && paymentColumns.has("transaction_id")) {
@@ -40,8 +100,8 @@ async function persistConfirmedPayment({ studentId, phone, amount, transactionId
 
   if (paymentColumns.has("student_id")) pushField("student_id", student?.id || null);
   if (paymentColumns.has("student_name")) pushField("student_name", student?.name || "Unknown");
-  if (paymentColumns.has("phone")) pushField("phone", phone || student?.phone || "");
-  if (paymentColumns.has("batch_name")) pushField("batch_name", batch_name || student?.batch_name || "");
+  if (paymentColumns.has("phone")) pushField("phone", normalizedPhone || student?.phone || "");
+  if (paymentColumns.has("batch_name")) pushField("batch_name", normalizedBatchName || student?.batch_name || "");
   if (paymentColumns.has("amount")) pushField("amount", amount || 0);
   if (paymentColumns.has("mode")) pushField("mode", mode);
   if (paymentColumns.has("payment_method")) pushField("payment_method", mode);
@@ -58,10 +118,26 @@ async function persistConfirmedPayment({ studentId, phone, amount, transactionId
 
   if (student && studentColumns.has("payment_status")) {
     await db.run("UPDATE students SET payment_status = 'Paid' WHERE id = $1", [student.id]);
+  } else if (studentColumns.has("payment_status") && normalizedPhone && normalizedBatchName) {
+    await db.run(
+      `UPDATE students
+       SET payment_status = 'Paid'
+       WHERE phone = $1
+         AND LOWER(TRIM(COALESCE(batch_name, ''))) = LOWER(TRIM($2))`,
+      [normalizedPhone, normalizedBatchName]
+    );
   }
 
   if (student && bookingColumns.has("status") && bookingColumns.has("student_id")) {
     await db.run("UPDATE bookings SET status = 'Confirmed' WHERE student_id = $1", [student.id]);
+  } else if (bookingColumns.has("status") && bookingColumns.has("phone") && bookingColumns.has("batch_name") && normalizedPhone && normalizedBatchName) {
+    await db.run(
+      `UPDATE bookings
+       SET status = 'Confirmed'
+       WHERE phone = $1
+         AND LOWER(TRIM(COALESCE(batch_name, ''))) = LOWER(TRIM($2))`,
+      [normalizedPhone, normalizedBatchName]
+    );
   }
 
   return { ok: true, payment, student };
@@ -212,6 +288,149 @@ async function confirmPublicPayment(req, res) {
   }
 }
 
+async function createRazorpayOrder(req, res) {
+  try {
+    const { keyId, keySecret } = await getRazorpayConfig();
+    if (!keyId || !keySecret) {
+      return res.status(500).json({ error: "Razorpay is not configured on the server." });
+    }
+
+    const { studentId, phone, amount, batch_name, studentName, email } = req.body;
+    const numericAmount = Number(amount);
+
+    if (!batch_name || !numericAmount || numericAmount <= 0) {
+      return res.status(400).json({ error: "Batch name and amount are required." });
+    }
+
+    const receipt = `adm_${Date.now()}`.slice(0, 40);
+    const response = await fetch("https://api.razorpay.com/v1/orders", {
+      method: "POST",
+      headers: {
+        Authorization: buildBasicAuthHeader(keyId, keySecret),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount: Math.round(numericAmount * 100),
+        currency: "INR",
+        receipt,
+        notes: {
+          studentId: String(studentId || ""),
+          phone: String(phone || ""),
+          batch_name: String(batch_name || ""),
+          amount: String(numericAmount),
+          studentName: String(studentName || ""),
+          email: String(email || ""),
+        },
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return res.status(response.status).json({ error: payload.error?.description || "Unable to create Razorpay order." });
+    }
+
+    res.json({
+      ok: true,
+      keyId,
+      order: payload,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+async function verifyRazorpayPayment(req, res) {
+  try {
+    const { keySecret } = await getRazorpayConfig();
+    if (!keySecret) {
+      return res.status(500).json({ error: "Razorpay is not configured on the server." });
+    }
+
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      studentId,
+      phone,
+      amount,
+      batch_name,
+    } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: "Razorpay payment details are required." });
+    }
+
+    const valid = verifyRazorpaySignature({
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+      secret: keySecret,
+    });
+
+    if (!valid) {
+      return res.status(400).json({ error: "Invalid Razorpay payment signature." });
+    }
+
+    const result = await persistConfirmedPayment({
+      studentId,
+      phone,
+      amount,
+      transactionId: razorpay_payment_id,
+      mode: "Razorpay",
+      batch_name,
+      notes: `Razorpay order ${razorpay_order_id}`,
+    });
+
+    res.json({ ok: true, payment: result.payment, message: "Razorpay payment verified." });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+async function handleRazorpayWebhook(req, res) {
+  try {
+    const { webhookSecret } = await getRazorpayConfig();
+    if (!webhookSecret) {
+      return res.status(500).json({ error: "Razorpay webhook secret is not configured." });
+    }
+
+    const signature = req.headers["x-razorpay-signature"];
+    const rawBody = req.rawBody || "";
+    if (!signature || !rawBody) {
+      return res.status(400).json({ error: "Missing Razorpay webhook signature." });
+    }
+
+    const valid = verifyRazorpayWebhookSignature({
+      rawBody,
+      signature: String(signature),
+      secret: webhookSecret,
+    });
+
+    if (!valid) {
+      return res.status(400).json({ error: "Invalid Razorpay webhook signature." });
+    }
+
+    const event = req.body || {};
+    if (event.event === "payment.captured") {
+      const entity = event.payload?.payment?.entity || {};
+      const notes = entity.notes || {};
+      await persistConfirmedPayment({
+        studentId: notes.studentId ? Number(notes.studentId) : null,
+        phone: notes.phone || entity.contact || "",
+        amount: notes.amount ? Number(notes.amount) : Number(entity.amount || 0) / 100,
+        transactionId: entity.id,
+        mode: "Razorpay",
+        batch_name: notes.batch_name || "",
+        notes: `Razorpay webhook payment.captured for order ${entity.order_id || ""}`.trim(),
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 async function createStripeCheckoutSession(req, res) {
   try {
     if (!stripe) {
@@ -304,6 +523,9 @@ module.exports = {
   createPayment,
   updatePayment,
   confirmPublicPayment,
+  createRazorpayOrder,
+  verifyRazorpayPayment,
+  handleRazorpayWebhook,
   createStripeCheckoutSession,
   confirmStripeCheckoutSession,
 };

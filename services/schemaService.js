@@ -201,7 +201,10 @@ async function ensureSettingsSchema() {
       ('instagramPaymentLink', ''),
       ('instagramRegistrationFormUrl', ''),
       ('instagramPrivacyPolicyUrl', ''),
-      ('instagramFollowupNote', '30th of this month')
+      ('instagramFollowupNote', '30th of this month'),
+      ('razorpayKeyId', ''),
+      ('razorpayKeySecret', ''),
+      ('razorpayWebhookSecret', '')
     ON CONFLICT (key) DO NOTHING
   `);
 }

@@ -34,7 +34,12 @@ pool.connect((error, client, release) => {
 const app = express();
 
 app.use(cors({ origin: "*" }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf?.length ? buf.toString("utf8") : "";
+  },
+}));
 
 app.use("/api/admin", authRoutes);
 app.use("/api/admin", dashboardRoutes);
