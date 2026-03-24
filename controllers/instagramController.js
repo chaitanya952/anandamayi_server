@@ -191,6 +191,13 @@ async function sendInstagramMessage(recipientId, text, config) {
     return;
   }
 
+  console.log("[Instagram] Sending reply", {
+    recipientId,
+    preview: String(text || "").slice(0, 80),
+    graphApiVersion: config.graphApiVersion,
+    accessTokenConfigured: Boolean(config.accessToken),
+  });
+
   const response = await fetch(`https://graph.facebook.com/${config.graphApiVersion}/me/messages`, {
     method: "POST",
     headers: {
@@ -260,8 +267,17 @@ async function receiveWebhook(req, res) {
     const body = req.body || {};
     const entries = Array.isArray(body.entry) ? body.entry : [];
 
+    console.log("[Instagram] Webhook received", {
+      object: body.object || "",
+      entryCount: entries.length,
+    });
+
     for (const entry of entries) {
       const messagingEvents = Array.isArray(entry.messaging) ? entry.messaging : [];
+
+      console.log("[Instagram] Entry processed", {
+        messagingEvents: messagingEvents.length,
+      });
 
       for (const event of messagingEvents) {
         if (!event?.sender?.id) continue;
@@ -269,6 +285,11 @@ async function receiveWebhook(req, res) {
 
         const senderId = event.sender.id;
         const text = String(event?.message?.text || "").trim();
+
+        console.log("[Instagram] Incoming message", {
+          senderId,
+          text,
+        });
 
         if (!text) continue;
 
