@@ -119,6 +119,7 @@ async function resolveBatchSelection(messageText) {
 function buildGreetingMessage(config) {
   return [
     "Namaskaram 🙏✨",
+    `Registration Link: ${config.registrationFormUrl}`,
     "Thank you for reaching out to us 💛",
     "",
     "Please choose your preferred batch:",
